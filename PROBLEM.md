@@ -11,18 +11,18 @@ A TTRPG/boardgame convention runs over a weekend with the following structure:
   4. Sunday morning
 
 - Each SLOT contains a number of **EVENTs** (varies per slot, e.g. 5 or 7).
-- Each EVENT has a fixed **capacity** (maximum number of PLAYERs it can hold).
+- Each EVENT has a fixed **capacity** (maximum number of PLAYERs it can hold) and an optional **minimum** (minimum PLAYERs required for the event to run).
 - Each PLAYER may express interest in zero or more EVENTs per SLOT, with a **score from 1–5** (5 = most interested).
 
 ---
 
 ## Definitions
 
-| Term     | Meaning |
-|----------|---------|
-| SLOT     | A time block during the weekend. SLOTs are processed sequentially. |
-| EVENT    | A game session within a SLOT, with a fixed participant capacity. |
-| PLAYER   | A convention attendee who registers interest in EVENTs. |
+| Term        | Meaning |
+|-------------|---------|
+| SLOT        | A time block during the weekend. SLOTs are processed sequentially. |
+| EVENT       | A game session within a SLOT, with a fixed capacity and optional minimum player count. |
+| PLAYER      | A convention attendee who registers interest in EVENTs. |
 | SCORE       | A PLAYER's interest level in an EVENT: integer 1–5. Unranked = no interest. |
 | SATISFIED   | A PLAYER who has been assigned at least one EVENT they scored 5 across the weekend so far. |
 | UNSATISFIED | A PLAYER who has not yet received any EVENT they scored 5. |
@@ -35,6 +35,7 @@ A TTRPG/boardgame convention runs over a weekend with the following structure:
 2. An EVENT cannot exceed its **capacity**.
 3. If a PLAYER has expressed **no interest** in any EVENT for a SLOT, they are **ignored** for that SLOT.
 4. SLOTs must be **processed in order** (SLOT-1 is finalized before SLOT-2 begins, etc.).
+5. An EVENT with a **MinPlayers** threshold that is not met is **cancelled** for that SLOT. Its assigned players are returned to the pool and the SLOT is re-solved without it. This repeats until no further events are cancelled.
 
 ---
 
@@ -65,6 +66,8 @@ To steer the assignment algorithm toward the primary objective, raw preference s
 | UNSATISFIED player, any event, **boost-enabled SLOT** | score × 2 |
 | All other cases | actual score (1–5) |
 
+**Key property**: a player's score-5 edge (adjusted to 10) always outweighs any lower-scored edge (max 8 with boost, max 4 without). A player is therefore never moved away from their score-5 event to a lower-scored one *unless their score-5 event is full*.
+
 The late boost (all scores × 2 for unsatisfied players) applies to a configurable trailing window of SLOTs, set by the organizers at runtime.
 
 ### Operational model
@@ -78,21 +81,51 @@ This means the boost window is a **live parameter** set before each slot is proc
 
 ---
 
+## Tie-breaking
+
+When multiple PLAYERs have equal adjusted scores for the same EVENT, the winner is decided by a **seeded lottery**. The seed is derived from the convention year:
+
+```
+seed = year × 1000 + slotIndex
+```
+
+This means:
+- Results are **fully reproducible** within a year — re-running with the same input gives the same output.
+- Results are **different next year** — no organizer can predict or game the draw in advance.
+- The seed is **printed in the report** so any player can verify the draw was fair.
+
+---
+
+## Capacity edge cases
+
+Both of the following outcomes are valid and expected:
+
+| Situation | Outcome |
+|---|---|
+| More interested PLAYERs than total event capacity in a SLOT | Some PLAYERs are left **unassigned** for that SLOT. The algorithm fills the most valuable seats first. |
+| Fewer interested PLAYERs than an event's capacity | The event runs with a **partial fill**. Empty seats are not a problem. |
+| Fewer PLAYERs than an event's MinPlayers threshold | The event is **cancelled** for this SLOT. PLAYERs freed by the cancellation are re-assigned to remaining events if possible. |
+
+---
+
 ## Challenges
 
-- **Contention**: Many PLAYERs may rank the same EVENT highest — capacity limits mean not everyone can get their top pick.
+- **Contention**: Many PLAYERs may score 5 on the same EVENT — capacity limits mean not everyone can get their top pick.
 - **Sequential commitment**: Decisions made in SLOT-1 are irreversible and affect what options remain for SLOT-2 onward.
-- **Look-ahead trade-off**: Greedily maximizing SLOT-1 may starve PLAYERs of top-pick opportunities in later SLOTs. The algorithm must balance immediate and future satisfaction.
-- **Uneven interest distribution**: Some PLAYERs may rank many events equally high; others may have a single high-priority pick and nothing else.
-- **Partial coverage**: A PLAYER who has no interests in some SLOTs should not be penalized — they only participate in SLOTs where they expressed interest.
+- **Look-ahead trade-off**: Greedily maximizing SLOT-1 may starve PLAYERs of score-5 opportunities in later SLOTs. The satisfaction-based priority weighting approximates this without exhaustive search.
+- **Uneven interest distribution**: Some PLAYERs may score 5 on many events; others may have a single high-priority pick and nothing else.
+- **Partial coverage**: A PLAYER who has no interests in some SLOTs is not penalized — they only participate in SLOTs where they expressed interest.
+- **Undersubscribed events**: An event with very few interested PLAYERs may not be worth running. The MinPlayers threshold and cancellation loop handle this.
 
 ---
 
 ## Output
 
-For each SLOT, the algorithm produces an **assignment map**: `EVENT → [PLAYERs]`, respecting all capacity and exclusivity constraints.
+For each SLOT, the algorithm produces:
 
-Additionally, a summary should report:
-- How many PLAYERs received at least one top-score assignment.
-- Total preference score across all assignments.
-- Unassigned PLAYERs per SLOT (had interest but did not fit any event).
+- **Assignment map**: `EVENT → [PLAYERs]`, respecting all capacity and exclusivity constraints.
+- **Cancelled events**: EVENTs removed due to insufficient players, listed by ID.
+- **Unassigned PLAYERs**: PLAYERs who had interest but could not be placed in any surviving event.
+- **Newly satisfied PLAYERs**: PLAYERs who received their first score-5 assignment this SLOT.
+- **Total score**: sum of actual (unadjusted) preference scores across all assignments.
+- **Tie-breaking seed**: the seed used for the lottery shuffle this SLOT.

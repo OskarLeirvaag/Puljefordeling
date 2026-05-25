@@ -53,20 +53,35 @@ All other data (events, capacities, player preferences) is read-only input.
 ```mermaid
 flowchart TD
     A([Slot begins]) --> B[1. Filter players\nwith interest in this slot]
-    B --> C[2. Adjust scores\nper satisfaction state + boost flag]
-    C --> D[3. Build flow network\nSource → Players → Events → Sink]
-    D --> E[4. Solve\nmin-cost max-flow]
-    E --> F[5. Extract assignments\nfrom flow paths]
-    F --> G[6. Update\nsatisfied set]
-    G --> H[7. Emit report]
-    H --> End([Slot done])
+    B --> C[2. Shuffle players\nseeded lottery for tie-breaking]
+    C --> D[3. Adjust scores\nper satisfaction state + boost flag]
+    D --> E[4. Build flow network\nSource → Players → Active Events → Sink]
+    E --> F[5. Solve\nmin-cost max-flow]
+    F --> G[6. Check MinPlayers\nfor each event]
+    G --> H{Any event\nundersubscribed?}
+    H -->|yes — cancel it| E
+    H -->|no| I[7. Update\nsatisfied set]
+    I --> J[8. Emit report]
+    J --> End([Slot done])
 ```
 
 ### Step 1 — Filter players
 
 Collect all PLAYERs who have expressed at least one interest (score ≥ 1) in the current SLOT. Players with no interest in this SLOT are skipped entirely.
 
-### Step 2 — Adjust scores
+### Step 2 — Shuffle players
+
+Shuffle the filtered player list using a **seeded PRNG** before building the graph. This makes tie-breaking (equal adjusted scores competing for the same seat) random but reproducible.
+
+The seed is derived from the convention year and the slot's position in the weekend:
+
+```
+seed = year × 1000 + slotIndex   (e.g. slot 3 of 2026 → seed 2026002)
+```
+
+Results are consistent within a year and automatically different next year. The seed is included in the slot report.
+
+### Step 3 — Adjust scores
 
 For each (player, event) pair where the player has an interest, compute an **adjusted score**:
 
@@ -88,7 +103,11 @@ flowchart TD
 | Unsatisfied | 1–4 | no | score |
 | Satisfied | any | either | score |
 
-### Step 3 — Build the flow network
+### Steps 4–6 — Solve with cancellation loop
+
+The flow solve and the MinPlayers check form a loop that repeats until stable:
+
+#### Step 4 — Build the flow network
 
 ```mermaid
 flowchart LR
@@ -110,31 +129,38 @@ flowchart LR
 
 - **S → Player**: capacity 1, cost 0. Each player can be assigned at most once.
 - **Player → Event**: capacity 1, cost = −(adjusted score). Edge exists only if the player rated this event. Cost is negated because min-cost flow minimises — negating the score turns the maximisation into a minimisation.
-- **Event → T**: capacity = event's seat limit, cost 0.
+- **Event → T**: capacity = event's seat limit, cost 0. Only **active** (not yet cancelled) events appear.
 
-### Step 4 — Solve min-cost max-flow
+#### Step 5 — Solve min-cost max-flow
 
 Run min-cost max-flow from S to T.
 
 - **Max flow** ensures as many players as possible are assigned (subject to event capacities).
 - **Min cost** (over negated scores) ensures total preference satisfaction is maximised among all assignments with equal flow.
 
-### Step 5 — Extract assignments
+#### Step 6 — Check MinPlayers and cancel
 
-Each unit of flow along a path `S → Player_i → Event_j → T` represents player `i` assigned to event `j`. Collect these into the assignment map `Event → []Player`.
+For each active event, compare the number of assigned players against its `MinPlayers` threshold. If any event falls short:
 
-### Step 6 — Update satisfaction state
+1. Remove it from the active event set.
+2. Go back to step 4 and re-solve.
+
+The loop terminates because each iteration removes at least one event. In the worst case it runs once per event in the slot.
+
+### Step 7 — Update satisfaction state
 
 For each player assigned to an event they scored 5 in this slot, add them to the satisfied set if not already present.
 
-### Step 7 — Emit report
+### Step 8 — Emit report
 
 Output for this slot:
 - Assignment map: which players go to which event.
-- Players with interest but left unassigned (wanted to play, no seat available).
+- Cancelled events: events removed due to insufficient players.
+- Players with interest but left unassigned (wanted to play, no seat in any surviving event).
 - Players newly satisfied this slot.
 - Running totals: satisfied / total players with any 5-score across the weekend.
-- Total adjusted score sum for this slot.
+- Total actual (unadjusted) score sum for this slot.
+- Tie-breaking seed used for the shuffle.
 
 ---
 
@@ -184,9 +210,10 @@ For a single slot with **P** players and **E** events:
 |---|---|
 | Nodes | O(P + E) |
 | Edges | O(P × E) worst case |
-| Min-cost max-flow | O(P × E × log(P + E)) with SPFA / Dijkstra + potentials |
+| Min-cost max-flow | O(P × E × log(P + E)) with SPFA |
+| Cancellation loop | at most E iterations of the above |
 
-For realistic convention sizes (200 players, 7 events), each slot solves in milliseconds.
+Overall per-slot: **O(E × P × E × log(P + E))**, which is fast for realistic convention sizes (200 players, 7 events per slot → milliseconds).
 
 ---
 
