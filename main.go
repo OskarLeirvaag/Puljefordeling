@@ -12,7 +12,7 @@ import (
 func main() {
 	weekend := buildWeekend()
 
-	st := solver.NewState(2026)
+	st := solver.NewState(2026, weekend)
 
 	for i, slot := range weekend.Slots {
 		// The organiser enables the late boost for the last slot in this demo.
@@ -33,7 +33,7 @@ func buildWeekend() model.Weekend {
 			ID:   "fri-eve",
 			Name: "Friday Evening",
 			Events: []model.Event{
-				{ID: "dnd", Name: "D&D: Curse of Strahd", Capacity: 4},
+				{ID: "dnd", Name: "D&D: Curse of Strahd", Capacity: 4, DMID: "frank"},
 				{ID: "pf", Name: "Pathfinder: Kingmaker", Capacity: 3},
 			},
 		},
@@ -41,7 +41,7 @@ func buildWeekend() model.Weekend {
 			ID:   "sat-morn",
 			Name: "Saturday Morning",
 			Events: []model.Event{
-				{ID: "coc", Name: "Call of Cthulhu", Capacity: 3},
+				{ID: "coc", Name: "Call of Cthulhu", Capacity: 3, DMID: "frank"},
 				{ID: "bitd", Name: "Blades in the Dark", Capacity: 4},
 				{ID: "vamp", Name: "Vampire: the Masquerade", Capacity: 3},
 			},
@@ -50,8 +50,8 @@ func buildWeekend() model.Weekend {
 			ID:   "sat-eve",
 			Name: "Saturday Evening",
 			Events: []model.Event{
-				{ID: "ti4", Name: "Twilight Imperium", Capacity: 6, MinPlayers: 4},
-				{ID: "gloom", Name: "Gloomhaven", Capacity: 4, MinPlayers: 2},
+				{ID: "ti4", Name: "Twilight Imperium", Capacity: 6},
+				{ID: "gloom", Name: "Gloomhaven", Capacity: 4, DMID: "frank"},
 			},
 		},
 		{
@@ -107,13 +107,12 @@ func buildWeekend() model.Weekend {
 		},
 		{
 			ID: "frank", Name: "Frank",
-			// Frank has no score-5 anywhere — will never be "satisfied"
-			// but should still get good assignments.
+			// Frank is a DM running 3 events (D&D Friday, CoC Saturday morning,
+			// Gloomhaven Saturday evening). His only free slot is Sunday.
+			// As a DM he gets +10 on all edges, and his playable opportunities
+			// for score-5 are limited to Sunday.
 			Prefs: map[string]map[string]model.Score{
-				"fri-eve":  {"pf": 4, "dnd": 3},
-				"sat-morn": {"bitd": 4},
-				"sat-eve":  {"gloom": 4, "ti4": 3},
-				"sun-morn": {"oneshot": 4},
+				"sun-morn": {"oneshot": 5, "mage": 4},
 			},
 		},
 		{
@@ -164,15 +163,19 @@ func printResult(slot model.Slot, result model.SlotResult, lateBoost bool) {
 
 	for _, ev := range slot.Events {
 		players := result.Assignments[ev.ID]
+		dm := ""
+		if ev.DMID != "" {
+			dm = fmt.Sprintf(" [DM: %s]", ev.DMID)
+		}
 		if len(players) == 0 {
-			fmt.Printf("  %-30s  (empty)\n", ev.Name)
+			fmt.Printf("  %-30s%s  (empty)\n", ev.Name, dm)
 		} else {
-			fmt.Printf("  %-30s  %s\n", ev.Name, strings.Join(players, ", "))
+			fmt.Printf("  %-30s%s  %s\n", ev.Name, dm, strings.Join(players, ", "))
 		}
 	}
 
-	if len(result.CancelledEvents) > 0 {
-		fmt.Printf("  Cancelled (undersubscribed): %s\n", strings.Join(result.CancelledEvents, ", "))
+	if len(result.UndersubscribedEvents) > 0 {
+		fmt.Printf("  ⚠ Needs review (fewer than 3 players): %s\n", strings.Join(result.UndersubscribedEvents, ", "))
 	}
 	if len(result.Unassigned) > 0 {
 		fmt.Printf("  Unassigned: %s\n", strings.Join(result.Unassigned, ", "))

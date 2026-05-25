@@ -52,16 +52,15 @@ All other data (events, capacities, player preferences) is read-only input.
 
 ```mermaid
 flowchart TD
-    A([Slot begins]) --> B[1. Filter players\nwith interest in this slot]
+    A([Slot begins]) --> B[1. Filter players\nexclude DMs of this slot,\nkeep those with interest]
     B --> C[2. Shuffle players\nseeded lottery for tie-breaking]
-    C --> D[3. Adjust scores\nper satisfaction state + boost flag]
-    D --> E[4. Build flow network\nSource → Players → Active Events → Sink]
-    E --> F[5. Solve\nmin-cost max-flow]
-    F --> G[6. Check MinPlayers\nfor each event]
-    G --> H{Any event\nundersubscribed?}
-    H -->|yes — cancel it| E
-    H -->|no| I[7. Update\nsatisfied set]
-    I --> J[8. Emit report]
+    C --> D[3. Compute opportunities\nper unsatisfied player]
+    D --> E[4. Adjust scores\nper state + boost + DM]
+    E --> F[5. Build flow network\nSource → Players → Events → Sink]
+    F --> G[6. Solve min-cost max-flow]
+    G --> H[7. Flag events below MinPlayers\nfor organiser review]
+    H --> I[8. Update satisfied set]
+    I --> J[9. Emit report]
     J --> End([Slot done])
 ```
 
@@ -83,31 +82,31 @@ Results are consistent within a year and automatically different next year. The 
 
 ### Step 3 — Adjust scores
 
-For each (player, event) pair where the player has an interest, compute an **adjusted score**:
+For each unsatisfied player, first compute `opportunities` — the number of remaining slots (including this one) where they have at least one score-5 event.
+
+Then, for each (player, event) pair where the player has an interest, compute an **adjusted score**:
 
 ```mermaid
 flowchart TD
     Start([Player × Event pair]) --> Q1{Player\nsatisfied?}
     Q1 -->|yes| Actual[Use actual score]
     Q1 -->|no| Q2{Event\nscored 5?}
-    Q2 -->|yes| Ten[Score = 10]
+    Q2 -->|yes| Ten["10 + max(0, 5 − opps)"]
     Q2 -->|no| Q3{Late boost\nenabled?}
     Q3 -->|yes| Double[Score × 2]
     Q3 -->|no| Actual2[Use actual score]
 ```
 
-| Player state | Event score | Late boost enabled? | Adjusted score |
+| Player state | Event score | Late boost | Adjusted score |
 |---|---|---|---|
-| Unsatisfied | 5 | either | **10** |
+| Unsatisfied | 5 | either | **10 + max(0, 5 − opportunities)** |
 | Unsatisfied | 1–4 | yes | **score × 2** |
 | Unsatisfied | 1–4 | no | score |
 | Satisfied | any | either | score |
 
-### Steps 4–6 — Solve with cancellation loop
+The scarcity bonus on score-5 edges (1 opp → +4, 2 → +3, … 5+ → +0) ensures players whose only score-5 chance is in this slot outrank players who have other slots to fall back on. The exact magnitudes don't matter — MCMF only cares about ordering — but the small bonus is enough to break ties between unsatisfied players competing for the same score-5 seat.
 
-The flow solve and the MinPlayers check form a loop that repeats until stable:
-
-#### Step 4 — Build the flow network
+### Step 5 — Build the flow network
 
 ```mermaid
 flowchart LR
@@ -129,38 +128,40 @@ flowchart LR
 
 - **S → Player**: capacity 1, cost 0. Each player can be assigned at most once.
 - **Player → Event**: capacity 1, cost = −(adjusted score). Edge exists only if the player rated this event. Cost is negated because min-cost flow minimises — negating the score turns the maximisation into a minimisation.
-- **Event → T**: capacity = event's seat limit, cost 0. Only **active** (not yet cancelled) events appear.
+- **Event → T**: capacity = event's seat limit, cost 0.
 
-#### Step 5 — Solve min-cost max-flow
+### Step 6 — Solve min-cost max-flow
 
 Run min-cost max-flow from S to T.
 
 - **Max flow** ensures as many players as possible are assigned (subject to event capacities).
 - **Min cost** (over negated scores) ensures total preference satisfaction is maximised among all assignments with equal flow.
 
-#### Step 6 — Check MinPlayers and cancel
+### Step 7 — Flag undersubscribed events
 
-For each active event, compare the number of assigned players against its `MinPlayers` threshold. If any event falls short:
+After solving, scan all events: any event with **fewer than 3 assigned players** is added to `UndersubscribedEvents` in the result. The threshold is hardcoded (`minViablePlayers = 3`) — three players is roughly the minimum for most tabletop games to be worth running.
 
-1. Remove it from the active event set.
-2. Go back to step 4 and re-solve.
+**The algorithm does not cancel events.** This is a deliberate choice — automated cancellation has too many edge cases (cascading cascades, "savable vs doomed" judgments, displaced players with no fallback) that the algorithm can't resolve well without human context. Instead, the flagged list goes to the organisers, who can:
 
-The loop terminates because each iteration removes at least one event. In the worst case it runs once per event in the slot.
+- Talk to the assigned players about swapping
+- Merge a small group with another table
+- Accept a smaller-than-usual group
+- Cancel the event manually and re-solve a downstream slot with adjusted preferences
 
-### Step 7 — Update satisfaction state
+### Step 8 — Update satisfaction state
 
 For each player assigned to an event they scored 5 in this slot, add them to the satisfied set if not already present.
 
-### Step 8 — Emit report
+### Step 9 — Emit report
 
 Output for this slot:
-- Assignment map: which players go to which event.
-- Cancelled events: events removed due to insufficient players.
-- Players with interest but left unassigned (wanted to play, no seat in any surviving event).
-- Players newly satisfied this slot.
-- Running totals: satisfied / total players with any 5-score across the weekend.
-- Total actual (unadjusted) score sum for this slot.
-- Tie-breaking seed used for the shuffle.
+- **Assignment map**: which players go to which event.
+- **Undersubscribed events**: events below MinPlayers — flagged for organiser review (not cancelled).
+- **Unassigned players**: had interest but couldn't be placed (e.g., all their rated events were full).
+- **Newly satisfied players**: those who received their first score-5 assignment this slot.
+- **Running totals**: satisfied / total players with any 5-score across the weekend.
+- **Total score**: sum of actual (unadjusted) scores across all assignments this slot.
+- **Tie-breaking seed**: used for the shuffle.
 
 ---
 
@@ -211,9 +212,79 @@ For a single slot with **P** players and **E** events:
 | Nodes | O(P + E) |
 | Edges | O(P × E) worst case |
 | Min-cost max-flow | O(P × E × log(P + E)) with SPFA |
-| Cancellation loop | at most E iterations of the above |
 
-Overall per-slot: **O(E × P × E × log(P + E))**, which is fast for realistic convention sizes (200 players, 7 events per slot → milliseconds).
+A single MCMF solve per slot. For realistic convention sizes (200 players, 7 events per slot) each slot solves in milliseconds.
+
+---
+
+## Tweaks: numbers, fairness, and considerations
+
+The algorithm contains several numeric constants that encode design tradeoffs. None of these values are sacred — they were chosen to produce intuitive orderings, but you can re-tune them.
+
+### The numbers
+
+| Tweak | Formula | Range |
+|---|---|---|
+| Score-5 base boost (unsatisfied) | `2 × MaxScore` | constant 10 |
+| Scarcity bonus (unsatisfied score-5) | `max(0, 5 − opportunities)` | 0..4 |
+| Late boost (unsatisfied score 1–4) | `score × 2` | 2..8 |
+| DM bonus (any edge for a DM) | `+10` | constant |
+
+### Combined adjusted scores
+
+The full table of edge weights, depending on who the player is and which event they're rating:
+
+| Player category | Edge type | Without late boost | With late boost |
+|---|---|---|---|
+| Regular, satisfied | any score | 1..5 | 1..5 |
+| Regular, unsatisfied | score 1–4 | 1..4 | 2..8 |
+| Regular, unsatisfied | score 5 | 10..14 | 10..14 |
+| DM, satisfied | any score | 11..15 | 11..15 |
+| DM, unsatisfied | score 1–4 | 11..14 | 12..18 |
+| DM, unsatisfied | score 5 | 20..24 | 20..24 |
+
+### Why these specific numbers?
+
+**Score-5 base = 10 (= 5×2)**. Pure doubling. Large enough that unsatisfied score-5 outranks any boosted lower-score edge (max 8). Arbitrary but readable.
+
+**Scarcity cap = 5**. Differentiates players with 1–5 score-5 opportunities; beyond 5 there's no further granularity. A weekend only has 4 slots, so this cap is generous in practice.
+
+**Late boost = ×2**. Same shape as the score-5 doubling. Big enough that an unsatisfied score-4 (→8) outranks a satisfied score-5 (5), giving organizers a strong knob to push unsatisfied players over the finish line in late slots.
+
+**DM bonus = +10**. Large enough that a DM with any positive edge competes with regular score-5 holders. This is the strongest single bonus — it reflects that DMs are *contributing* to the convention, not just attending.
+
+### Known unfairness and edge cases
+
+These are the cases where the algorithm produces results some participants will find surprising. Knowing about them helps organizers calibrate the numbers — or explain outcomes when asked.
+
+#### A DM with score 1 can beat a regular player with score 5
+
+DM score-1 = `1 + 10 = 11`. Regular unsatisfied score-5 with abundant opportunities = `10`.
+
+A DM who *barely* wants an event can take the seat from a player who *really* wants it. This is the deliberate price of compensating DMs. Lower the DM bonus if this feels too strong.
+
+#### Late boost compresses preference differences
+
+With late boost on, unsatisfied scores 1..4 become 2..8. The doubling compresses relative differences — score-3 (→6) is no longer clearly behind score-4 (→8) the way 3 was clearly behind 4. Players with mild interest can leapfrog players with stronger interest just because they have a slightly higher raw rating.
+
+#### A DM with no score-5 stays "unsatisfied" forever
+
+If a DM never gives any event a 5, they can never be marked satisfied. They still get their DM bonus on every edge, so they get good assignments — but the satisfaction metric will undercount them. This is cosmetic: their adjustments are still working.
+
+### Considerations for tuning
+
+If you re-tune these numbers, **preserve the priority ordering**, not the magnitudes. MCMF only cares about which costs are smaller than which — not by how much.
+
+The intended ordering, weakest to strongest, is roughly:
+
+1. Satisfied players on low-score events
+2. Unsatisfied non-DM players on low-score events (boosted if late-boost on)
+3. Satisfied players on score-5 events
+4. Unsatisfied non-DM players on score-5 events (scarcity bonus differentiates)
+5. DM players (any edge, ranked further by their underlying type)
+6. Unsatisfied DM players on score-5 events with scarcity
+
+A useful sanity check: dump the adjusted scores for one contentious slot and verify the ordering matches your intuition. If two categories you didn't intend to tie end up tied, raise one of the constants by 1 — that's usually enough.
 
 ---
 

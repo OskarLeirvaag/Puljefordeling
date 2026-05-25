@@ -30,29 +30,46 @@ func assigned(result model.SlotResult, eventID string) []string {
 	return result.Assignments[eventID]
 }
 
+// weekendOf wraps slots in a minimal Weekend for NewState.
+func weekendOf(slots ...model.Slot) model.Weekend {
+	return model.Weekend{Slots: slots}
+}
+
 // --- adjustScore ------------------------------------------------------------
 
 func TestAdjustScore_SatisfiedAlwaysRaw(t *testing.T) {
 	for _, score := range []model.Score{1, 2, 3, 4, 5} {
-		got := adjustScore(score, true, true)
+		got := adjustScore(score, true, true, 1, false)
 		if got != int(score) {
 			t.Errorf("satisfied score %d: want %d, got %d", score, score, got)
 		}
 	}
 }
 
-func TestAdjustScore_UnsatisfiedFiveIsAlwaysTen(t *testing.T) {
-	if got := adjustScore(5, false, false); got != 10 {
-		t.Errorf("unsatisfied 5 no boost: want 10, got %d", got)
+func TestAdjustScore_ScarcityBonusDecays(t *testing.T) {
+	// Fewer remaining opportunities → larger bonus. Base 10 + max(0, 5-opps).
+	cases := []struct {
+		opps int
+		want int
+	}{
+		{1, 14},
+		{2, 13},
+		{3, 12},
+		{4, 11},
+		{5, 10},
+		{10, 10},
 	}
-	if got := adjustScore(5, false, true); got != 10 {
-		t.Errorf("unsatisfied 5 with boost: want 10, got %d", got)
+	for _, c := range cases {
+		got := adjustScore(5, false, false, c.opps, false)
+		if got != c.want {
+			t.Errorf("unsatisfied 5 with %d opps: want %d, got %d", c.opps, c.want, got)
+		}
 	}
 }
 
 func TestAdjustScore_LateBoostDoublesLowerScores(t *testing.T) {
 	for _, score := range []model.Score{1, 2, 3, 4} {
-		got := adjustScore(score, false, true)
+		got := adjustScore(score, false, true, 5, false)
 		want := int(score) * 2
 		if got != want {
 			t.Errorf("unsatisfied score %d with boost: want %d, got %d", score, want, got)
@@ -62,9 +79,20 @@ func TestAdjustScore_LateBoostDoublesLowerScores(t *testing.T) {
 
 func TestAdjustScore_NoBoostLowerScoresUnchanged(t *testing.T) {
 	for _, score := range []model.Score{1, 2, 3, 4} {
-		got := adjustScore(score, false, false)
+		got := adjustScore(score, false, false, 5, false)
 		if got != int(score) {
 			t.Errorf("unsatisfied score %d no boost: want %d, got %d", score, score, got)
+		}
+	}
+}
+
+func TestAdjustScore_FiveBeatsBoostedFour(t *testing.T) {
+	// Even with many opportunities (bonus minimal), unsatisfied score-5 must
+	// still beat unsatisfied score-4 with late boost (4×2=8).
+	for opps := 1; opps <= 100; opps++ {
+		got := adjustScore(5, false, false, opps, false)
+		if got <= 8 {
+			t.Errorf("unsatisfied 5 with %d opps must beat boosted 4 (8), got %d", opps, got)
 		}
 	}
 }
@@ -79,7 +107,7 @@ func TestSolveSlot_BasicAssignment(t *testing.T) {
 		player("bob", prefs("s1", map[string]model.Score{"B": 5})),
 	}
 
-	result := NewState(2026).SolveSlot(sl, players, false)
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, players, false)
 
 	if !slices.Contains(assigned(result, "A"), "alice") {
 		t.Error("alice should be assigned to A")
@@ -101,7 +129,7 @@ func TestSolveSlot_CapacityRespected(t *testing.T) {
 		player("p3", prefs("s1", map[string]model.Score{"A": 5})),
 	}
 
-	result := NewState(2026).SolveSlot(sl, players, false)
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, players, false)
 
 	if len(assigned(result, "A")) != 2 {
 		t.Errorf("event A capacity 2: want 2 assigned, got %d", len(assigned(result, "A")))
@@ -119,7 +147,7 @@ func TestSolveSlot_NoInterestSkipped(t *testing.T) {
 		player("bob", map[string]map[string]model.Score{}), // no interest in s1
 	}
 
-	result := NewState(2026).SolveSlot(sl, players, false)
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, players, false)
 
 	if !slices.Contains(assigned(result, "A"), "alice") {
 		t.Error("alice should be assigned")
@@ -137,7 +165,7 @@ func TestSolveSlot_HighScoreWinsContention(t *testing.T) {
 		player("high", prefs("s1", map[string]model.Score{"A": 5})),
 	}
 
-	result := NewState(2026).SolveSlot(sl, players, false)
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, players, false)
 
 	if !slices.Contains(assigned(result, "A"), "high") {
 		t.Error("high scorer should win the seat")
@@ -155,7 +183,7 @@ func TestSolveSlot_SatisfactionTracked(t *testing.T) {
 		player("bob", prefs("s1", map[string]model.Score{"A": 3})),
 	}
 
-	st := NewState(2026)
+	st := NewState(2026, weekendOf(sl))
 	result := st.SolveSlot(sl, players, false)
 
 	if !slices.Contains(result.NewlySatisfied, "alice") {
@@ -192,7 +220,7 @@ func TestSolveSlot_SatisfiedPlayerDeprioritised(t *testing.T) {
 		},
 	}
 
-	st := NewState(2026)
+	st := NewState(2026, weekendOf(sl1, sl2))
 	st.SolveSlot(sl1, []model.Player{alice}, false)
 
 	if !st.IsSatisfied("alice") {
@@ -229,7 +257,7 @@ func TestSolveSlot_LateBoostPrioritisesUnsatisfied(t *testing.T) {
 	}
 
 	// Without boost: alice wins.
-	stNoBoost := NewState(2026)
+	stNoBoost := NewState(2026, weekendOf(sl))
 	stNoBoost.satisfied["alice"] = true // pre-satisfy alice
 	resultNoBoost := stNoBoost.SolveSlot(sl, []model.Player{alice, bob}, false)
 	if !slices.Contains(assigned(resultNoBoost, "A"), "alice") {
@@ -237,7 +265,7 @@ func TestSolveSlot_LateBoostPrioritisesUnsatisfied(t *testing.T) {
 	}
 
 	// With boost: bob wins (4×2=8 > 5).
-	stBoost := NewState(2026)
+	stBoost := NewState(2026, weekendOf(sl))
 	stBoost.satisfied["alice"] = true // pre-satisfy alice
 	resultBoost := stBoost.SolveSlot(sl, []model.Player{alice, bob}, true)
 	if !slices.Contains(assigned(resultBoost, "A"), "bob") {
@@ -253,7 +281,7 @@ func TestSolveSlot_TotalScoreIsUnadjusted(t *testing.T) {
 		player("bob", prefs("s1", map[string]model.Score{"A": 3})),
 	}
 
-	result := NewState(2026).SolveSlot(sl, players, false)
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, players, false)
 
 	if result.TotalScore != 8 {
 		t.Errorf("TotalScore: want 8 (5+3), got %d", result.TotalScore)
@@ -262,71 +290,58 @@ func TestSolveSlot_TotalScoreIsUnadjusted(t *testing.T) {
 
 func TestSolveSlot_EmptySlot(t *testing.T) {
 	sl := slot("s1", event("A", 4))
-	result := NewState(2026).SolveSlot(sl, []model.Player{}, false)
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, []model.Player{}, false)
 
 	if len(result.Assignments) != 0 {
 		t.Error("no players means no assignments")
 	}
 }
 
-func eventMin(id string, capacity, minPlayers int) model.Event {
-	return model.Event{ID: id, Name: id, Capacity: capacity, MinPlayers: minPlayers}
-}
-
-func TestSolveSlot_UndersubscribedEventCancelled(t *testing.T) {
-	// Event A requires 3 players but only 1 is interested.
-	// Event B has no minimum. The 1 player should end up on B after A is cancelled.
-	sl := model.Slot{
-		ID:   "s1",
-		Name: "s1",
-		Events: []model.Event{
-			eventMin("A", 4, 3),
-			event("B", 4),
-		},
-	}
+func TestSolveSlot_UndersubscribedEventFlagged(t *testing.T) {
+	// Only 1 player interested in event A — fewer than the hardcoded threshold
+	// of 3. The lone player is still assigned, and the event is flagged.
+	sl := slot("s1", event("A", 4), event("B", 4))
 	players := []model.Player{
 		player("alice", prefs("s1", map[string]model.Score{"A": 5, "B": 3})),
 	}
 
-	result := NewState(2026).SolveSlot(sl, players, false)
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, players, false)
 
-	if !slices.Contains(result.CancelledEvents, "A") {
-		t.Error("event A should be cancelled (1 player < MinPlayers 3)")
+	if !slices.Contains(result.UndersubscribedEvents, "A") {
+		t.Error("event A should be flagged (1 player < 3)")
 	}
-	if !slices.Contains(assigned(result, "B"), "alice") {
-		t.Error("alice should be reassigned to B after A is cancelled")
+	if !slices.Contains(assigned(result, "A"), "alice") {
+		t.Error("alice should still be assigned to her preferred event A")
 	}
 }
 
-func TestSolveSlot_CancellationCascades(t *testing.T) {
-	// Event A requires 2 players, B requires 2 players.
-	// Only 3 players total, all preferring A.
-	// First run: A gets 3, B gets 0 → B cancelled.
-	// Re-run with only A: A gets 3 ≥ 2 → stable.
-	sl := model.Slot{
-		ID:   "s1",
-		Name: "s1",
-		Events: []model.Event{
-			eventMin("A", 4, 2),
-			eventMin("B", 4, 2),
-		},
+func TestSolveSlot_FullyEmptyEventFlagged(t *testing.T) {
+	// Event B has no interested players — flagged.
+	sl := slot("s1", event("A", 4), event("B", 4))
+	players := []model.Player{
+		player("p1", prefs("s1", map[string]model.Score{"A": 5})),
 	}
+
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, players, false)
+
+	if !slices.Contains(result.UndersubscribedEvents, "B") {
+		t.Error("event B should be flagged (0 players < 3)")
+	}
+}
+
+func TestSolveSlot_ThreePlayersIsViable(t *testing.T) {
+	// Exactly 3 players → at the threshold, not flagged.
+	sl := slot("s1", event("A", 4))
 	players := []model.Player{
 		player("p1", prefs("s1", map[string]model.Score{"A": 5})),
 		player("p2", prefs("s1", map[string]model.Score{"A": 5})),
 		player("p3", prefs("s1", map[string]model.Score{"A": 5})),
 	}
 
-	result := NewState(2026).SolveSlot(sl, players, false)
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, players, false)
 
-	if !slices.Contains(result.CancelledEvents, "B") {
-		t.Error("event B should be cancelled (no players)")
-	}
-	if !slices.Contains(result.CancelledEvents, "A") {
-		// A has 3 players ≥ MinPlayers 2, should survive
-		if len(assigned(result, "A")) < 2 {
-			t.Error("event A should run with at least 2 players")
-		}
+	if slices.Contains(result.UndersubscribedEvents, "A") {
+		t.Errorf("3 players meets the threshold, should not be flagged")
 	}
 }
 
@@ -357,7 +372,7 @@ func TestSolveSlot_TopScoreAlwaysBeatsFallback(t *testing.T) {
 		players[i] = p
 	}
 
-	result := NewState(2026).SolveSlot(sl, players, false)
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, players, false)
 
 	if len(assigned(result, "X")) != 10 {
 		t.Errorf("all 10 players should be on X (capacity allows it), got %d", len(assigned(result, "X")))
@@ -387,7 +402,7 @@ func TestSolveSlot_TopScoreLoserGetsFallback(t *testing.T) {
 		player("p6", prefs("s1", map[string]model.Score{"X": 5})),
 	}
 
-	result := NewState(2026).SolveSlot(sl, players, false)
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, players, false)
 
 	if len(assigned(result, "X")) != 4 {
 		t.Errorf("X capacity 4: want 4 assigned, got %d", len(assigned(result, "X")))
@@ -403,25 +418,140 @@ func TestSolveSlot_TopScoreLoserGetsFallback(t *testing.T) {
 	}
 }
 
-func TestSolveSlot_MinPlayersZeroMeansNoMinimum(t *testing.T) {
-	// MinPlayers == 0: event should run even with 1 player.
-	sl := model.Slot{
-		ID:   "s1",
-		Name: "s1",
-		Events: []model.Event{
-			event("A", 4), // MinPlayers defaults to 0
+func TestSolveSlot_ScarcePlayerBeatsAbundantOne(t *testing.T) {
+	// Two slots. Event A in s1 has capacity 1.
+	// "scarce" only has a score-5 in s1.
+	// "abundant" has score-5 in both s1 and s2.
+	// scarce must win the s1 seat — they have no other chance.
+	sl1 := slot("s1", event("A", 1))
+	sl2 := slot("s2", event("B", 1))
+
+	scarce := model.Player{
+		ID:   "scarce",
+		Name: "scarce",
+		Prefs: map[string]map[string]model.Score{
+			"s1": {"A": 5},
 		},
 	}
+	abundant := model.Player{
+		ID:   "abundant",
+		Name: "abundant",
+		Prefs: map[string]map[string]model.Score{
+			"s1": {"A": 5},
+			"s2": {"B": 5},
+		},
+	}
+
+	st := NewState(2026, weekendOf(sl1, sl2))
+	r1 := st.SolveSlot(sl1, []model.Player{scarce, abundant}, false)
+
+	if !slices.Contains(assigned(r1, "A"), "scarce") {
+		t.Errorf("scarce player (1 opportunity) should win the s1 seat over abundant (2), got %v", assigned(r1, "A"))
+	}
+}
+
+func TestAdjustScore_DMBonusOnAllEdges(t *testing.T) {
+	// DMs get +10 on every edge type.
+	cases := []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"satisfied score-5", adjustScore(5, true, false, 5, true), 15},
+		{"satisfied score-1", adjustScore(1, true, false, 5, true), 11},
+		{"unsatisfied score-5 abundant", adjustScore(5, false, false, 5, true), 20},
+		{"unsatisfied score-5 scarce", adjustScore(5, false, false, 1, true), 24},
+		{"unsatisfied score-4 boost", adjustScore(4, false, true, 5, true), 18},
+		{"unsatisfied score-4 no boost", adjustScore(4, false, false, 5, true), 14},
+	}
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Errorf("%s: want %d, got %d", c.name, c.want, c.got)
+		}
+	}
+}
+
+func TestSolveSlot_DMExcludedFromOwnSlot(t *testing.T) {
+	// "alice" DMs event A in slot s1. She has Prefs for s1 but must NOT
+	// be assigned because she is busy running A.
+	dmEvent := model.Event{ID: "A", Name: "A", Capacity: 4, DMID: "alice"}
+	sl := slot("s1", dmEvent, event("B", 4))
 	players := []model.Player{
-		player("alice", prefs("s1", map[string]model.Score{"A": 5})),
+		player("alice", prefs("s1", map[string]model.Score{"A": 5, "B": 5})),
+		player("bob", prefs("s1", map[string]model.Score{"A": 5, "B": 4})),
 	}
 
-	result := NewState(2026).SolveSlot(sl, players, false)
+	result := NewState(2026, weekendOf(sl)).SolveSlot(sl, players, false)
 
-	if len(result.CancelledEvents) != 0 {
-		t.Errorf("no cancellations expected, got %v", result.CancelledEvents)
+	for _, ev := range []string{"A", "B"} {
+		if slices.Contains(assigned(result, ev), "alice") {
+			t.Errorf("alice DMs A in this slot and must not be assigned to %s", ev)
+		}
 	}
-	if !slices.Contains(assigned(result, "A"), "alice") {
-		t.Error("alice should be assigned to A")
+	if !slices.Contains(assigned(result, "A"), "bob") {
+		t.Error("bob should be assigned to A (alice is DMing it, doesn't count as participant)")
+	}
+}
+
+func TestSolveSlot_DMPriorityBeatsRegularPlayer(t *testing.T) {
+	// Two players compete for one seat. dm is a DM elsewhere in the weekend,
+	// regular is not. Both score 5. DM should win because +10 bonus.
+	dmEventInOtherSlot := model.Event{ID: "Z", Name: "Z", Capacity: 4, DMID: "dm"}
+	sl1 := slot("s1", event("A", 1))
+	sl2 := slot("s2", dmEventInOtherSlot)
+
+	dm := model.Player{
+		ID:   "dm",
+		Name: "dm",
+		Prefs: map[string]map[string]model.Score{
+			"s1": {"A": 5},
+		},
+	}
+	regular := model.Player{
+		ID:   "regular",
+		Name: "regular",
+		Prefs: map[string]map[string]model.Score{
+			"s1": {"A": 5},
+		},
+	}
+
+	st := NewState(2026, weekendOf(sl1, sl2))
+	result := st.SolveSlot(sl1, []model.Player{dm, regular}, false)
+
+	if !slices.Contains(assigned(result, "A"), "dm") {
+		t.Errorf("DM should beat regular player for the score-5 seat, got %v", assigned(result, "A"))
+	}
+}
+
+func TestSolveSlot_DMOpportunitiesExcludesDMingSlots(t *testing.T) {
+	// dm DMs s2 and s3, leaving only s1 and s4 to play.
+	// They have score-5 events in s1, s2, s3, s4 — but s2 and s3 don't count
+	// as opportunities. So playable opportunities = 2 (s1, s4).
+	// That gives them a bigger scarcity bonus than if all 4 slots counted.
+	dmEvent2 := model.Event{ID: "Y", Name: "Y", Capacity: 4, DMID: "dm"}
+	dmEvent3 := model.Event{ID: "Z", Name: "Z", Capacity: 4, DMID: "dm"}
+	sl1 := slot("s1", event("A", 1))
+	sl2 := slot("s2", dmEvent2)
+	sl3 := slot("s3", dmEvent3)
+	sl4 := slot("s4", event("D", 1))
+
+	dm := model.Player{
+		ID:   "dm",
+		Name: "dm",
+		Prefs: map[string]map[string]model.Score{
+			"s1": {"A": 5},
+			"s2": {"Y": 5}, // DMing — shouldn't count
+			"s3": {"Z": 5}, // DMing — shouldn't count
+			"s4": {"D": 5},
+		},
+	}
+
+	st := NewState(2026, weekendOf(sl1, sl2, sl3, sl4))
+	// Compute opportunities at the start (slotIndex 0).
+	opps := st.remainingOpportunities(0, []model.Player{dm})
+
+	// Should be 2: s1 and s4. NOT 4.
+	if opps["dm"] != 2 {
+		t.Errorf("DM playable opportunities: want 2 (s1, s4 — s2/s3 are DMing), got %d", opps["dm"])
 	}
 }

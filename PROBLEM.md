@@ -11,7 +11,8 @@ A TTRPG/boardgame convention runs over a weekend with the following structure:
   4. Sunday morning
 
 - Each SLOT contains a number of **EVENTs** (varies per slot, e.g. 5 or 7).
-- Each EVENT has a fixed **capacity** (maximum number of PLAYERs it can hold) and an optional **minimum** (minimum PLAYERs required for the event to run).
+- Each EVENT has a fixed **capacity** (maximum number of PLAYERs it can hold).
+- Each EVENT optionally has a **DM** (Dungeon Master / Game Master) — the player who runs it. A DM cannot also be assigned as a participant in any event during a SLOT they are running.
 - Each PLAYER may express interest in zero or more EVENTs per SLOT, with a **score from 1–5** (5 = most interested).
 
 ---
@@ -21,9 +22,10 @@ A TTRPG/boardgame convention runs over a weekend with the following structure:
 | Term        | Meaning |
 |-------------|---------|
 | SLOT        | A time block during the weekend. SLOTs are processed sequentially. |
-| EVENT       | A game session within a SLOT, with a fixed capacity and optional minimum player count. |
+| EVENT       | A game session within a SLOT, with a fixed capacity. |
 | PLAYER      | A convention attendee who registers interest in EVENTs. |
 | SCORE       | A PLAYER's interest level in an EVENT: integer 1–5. Unranked = no interest. |
+| DM          | A PLAYER who runs one or more EVENTs during the weekend. They cannot play in their own SLOTs but receive priority everywhere else. |
 | SATISFIED   | A PLAYER who has been assigned at least one EVENT they scored 5 across the weekend so far. |
 | UNSATISFIED | A PLAYER who has not yet received any EVENT they scored 5. |
 
@@ -35,7 +37,7 @@ A TTRPG/boardgame convention runs over a weekend with the following structure:
 2. An EVENT cannot exceed its **capacity**.
 3. If a PLAYER has expressed **no interest** in any EVENT for a SLOT, they are **ignored** for that SLOT.
 4. SLOTs must be **processed in order** (SLOT-1 is finalized before SLOT-2 begins, etc.).
-5. An EVENT with a **MinPlayers** threshold that is not met is **cancelled** for that SLOT. Its assigned players are returned to the pool and the SLOT is re-solved without it. This repeats until no further events are cancelled.
+5. Any EVENT assigned **fewer than 3 PLAYERs** is **flagged for organiser review** in the report — it is NOT automatically cancelled. The organiser decides what to do (talk to players, allow swaps, merge tables, accept a small group, or cancel the event manually).
 
 ---
 
@@ -62,11 +64,26 @@ To steer the assignment algorithm toward the primary objective, raw preference s
 
 | Condition | Adjusted score |
 |---|---|
-| UNSATISFIED player, event scored 5, any SLOT | 10 |
-| UNSATISFIED player, any event, **boost-enabled SLOT** | score × 2 |
+| UNSATISFIED player, event scored 5 | **10 + max(0, 5 − opportunities)** |
+| UNSATISFIED player, score 1–4, **boost-enabled SLOT** | score × 2 |
 | All other cases | actual score (1–5) |
+| **DM bonus** (any edge for a DM player) | **+10 on top of the above** |
 
-**Key property**: a player's score-5 edge (adjusted to 10) always outweighs any lower-scored edge (max 8 with boost, max 4 without). A player is therefore never moved away from their score-5 event to a lower-scored one *unless their score-5 event is full*.
+DMs receive a flat +10 bonus on every edge they own, stacking with all other adjustments. This compensates them for the time they contribute as game masters.
+
+Where `opportunities` is the number of remaining SLOTs (including the current one) in which this player has at least one score-5 event. Fewer remaining chances ⇒ higher priority. Concretely:
+
+| Opportunities | Adjusted score |
+|---|---|
+| 1 (only chance, now-or-never) | 14 |
+| 2 | 13 |
+| 3 | 12 |
+| 4 | 11 |
+| 5 or more | 10 |
+
+**Key property**: a player's score-5 edge (adjusted to ≥ 10) always outweighs any lower-scored edge (max 8 with boost, max 4 without). A player is therefore never moved away from their score-5 event to a lower-scored one *unless their score-5 event is full*.
+
+**Scarcity bonus** ensures that players who have only one or two score-5 opportunities across the weekend are not crowded out by players with many other chances. This is the cross-slot look-ahead that the primary objective requires.
 
 The late boost (all scores × 2 for unsatisfied players) applies to a configurable trailing window of SLOTs, set by the organizers at runtime.
 
@@ -104,7 +121,7 @@ Both of the following outcomes are valid and expected:
 |---|---|
 | More interested PLAYERs than total event capacity in a SLOT | Some PLAYERs are left **unassigned** for that SLOT. The algorithm fills the most valuable seats first. |
 | Fewer interested PLAYERs than an event's capacity | The event runs with a **partial fill**. Empty seats are not a problem. |
-| Fewer PLAYERs than an event's MinPlayers threshold | The event is **cancelled** for this SLOT. PLAYERs freed by the cancellation are re-assigned to remaining events if possible. |
+| Fewer than 3 PLAYERs assigned to an event | The event is **flagged for organiser review** in the report. Assigned PLAYERs stay assigned; the organiser decides whether to keep the event running, talk to players about swapping, or cancel it manually. |
 
 ---
 
@@ -124,7 +141,7 @@ Both of the following outcomes are valid and expected:
 For each SLOT, the algorithm produces:
 
 - **Assignment map**: `EVENT → [PLAYERs]`, respecting all capacity and exclusivity constraints.
-- **Cancelled events**: EVENTs removed due to insufficient players, listed by ID.
+- **Undersubscribed events**: EVENTs with fewer than 3 assigned PLAYERs, flagged for organiser review (not automatically cancelled).
 - **Unassigned PLAYERs**: PLAYERs who had interest but could not be placed in any surviving event.
 - **Newly satisfied PLAYERs**: PLAYERs who received their first score-5 assignment this SLOT.
 - **Total score**: sum of actual (unadjusted) preference scores across all assignments.

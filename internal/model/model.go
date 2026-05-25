@@ -11,13 +11,13 @@ const (
 )
 
 // Event is a game session within a slot with a fixed seat count.
-// MinPlayers is the minimum number of players required for the event to run.
-// Zero means no minimum (the event runs with any number of players).
+// DMID is the player ID running this event; that player cannot also be
+// assigned as a participant in any event during the same slot.
 type Event struct {
-	ID         string
-	Name       string
-	Capacity   int
-	MinPlayers int
+	ID       string
+	Name     string
+	Capacity int
+	DMID     string
 }
 
 // Slot is a time block containing one or more events.
@@ -43,11 +43,11 @@ type Weekend struct {
 
 // SlotResult is the assignment output for a single slot.
 type SlotResult struct {
-	SlotID          string
-	Assignments     map[string][]string // eventID -> assigned playerIDs
-	CancelledEvents []string            // eventIDs cancelled due to insufficient players
-	Unassigned      []string            // playerIDs with interest but no seat
-	NewlySatisfied  []string            // playerIDs satisfied for the first time this slot
-	TotalScore      int                 // sum of actual (unadjusted) scores for all assignments
-	Seed            int64               // seed used for tie-breaking shuffle this slot
+	SlotID                string
+	Assignments           map[string][]string // eventID -> assigned playerIDs
+	UndersubscribedEvents []string            // eventIDs assigned fewer players than MinPlayers — flagged for organiser review (not cancelled)
+	Unassigned            []string            // playerIDs with interest but no seat
+	NewlySatisfied        []string            // playerIDs satisfied for the first time this slot
+	TotalScore            int                 // sum of actual (unadjusted) scores for all assignments
+	Seed                  int64               // seed used for tie-breaking shuffle this slot
 }
