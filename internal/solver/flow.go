@@ -1,4 +1,4 @@
-// Package solver implements the min-cost max-flow based event assignment algorithm.
+// Package solver implements the min-cost-flow based event assignment algorithm.
 package solver
 
 import "math"
@@ -13,7 +13,7 @@ type edge struct {
 	flow int
 }
 
-// flowGraph is a min-cost max-flow network solved with SPFA
+// flowGraph is a min-cost-flow network solved with SPFA
 // (Bellman-Ford based shortest-path augmentation).
 // Negative edge costs are supported, which allows negated preference
 // scores to be used directly.
@@ -39,8 +39,12 @@ func (g *flowGraph) addEdge(from, to, capacity, cost int) {
 	g.edges = append(g.edges, edge{from, 0, -cost, 0})
 }
 
-// minCostFlow runs successive shortest-path augmentation until no
-// augmenting path remains. It returns (totalFlow, totalCost).
+// minCostFlow runs successive shortest-path augmentation, pushing flow only
+// while it improves total value, and returns (totalFlow, totalCost). Because
+// the participation bonus is baked into the assignment-edge costs, this stops
+// once the cheapest remaining augmenting path is non-negative — i.e. it fills
+// chairs only when a new seat is worth more than it costs, rather than always
+// pushing to maximum flow.
 func (g *flowGraph) minCostFlow(s, t int) (int, int) {
 	totalFlow, totalCost := 0, 0
 	for {
@@ -56,7 +60,8 @@ func (g *flowGraph) minCostFlow(s, t int) (int, int) {
 
 // spfaAugment finds the minimum-cost augmenting path from s to t using SPFA,
 // pushes as much flow as the path bottleneck allows, and returns
-// (flow, cost, true). Returns (0, 0, false) when no path exists.
+// (flow, cost, true). Returns (0, 0, false) when no welfare-improving path
+// remains.
 func (g *flowGraph) spfaAugment(s, t int) (int, int, bool) {
 	dist := make([]int, g.n)
 	for i := range dist {
@@ -96,7 +101,13 @@ func (g *flowGraph) spfaAugment(s, t int) (int, int, bool) {
 		}
 	}
 
-	if dist[t] == math.MaxInt {
+	// Stop when no welfare-improving augmentation remains. A path with
+	// non-negative total cost would not increase total value (the
+	// participation bonus is already folded into the edge costs), so we leave
+	// the remaining seats empty rather than make a losing trade. SSP visits
+	// augmenting paths in non-decreasing cost order, so once the cheapest is
+	// non-negative we are at the optimal flow value.
+	if dist[t] == math.MaxInt || dist[t] >= 0 {
 		return 0, 0, false
 	}
 

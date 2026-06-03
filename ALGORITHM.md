@@ -4,7 +4,7 @@
 
 The algorithm runs **once per SLOT**, in order. Each run takes the current satisfaction state of all players, adjusts their preference scores based on that state and the organizer's boost settings, then solves the assignment as a **min-cost max-flow** problem on a bipartite graph.
 
-Between runs, the organizer inspects a satisfaction report and decides whether to enable the late boost for the next slot.
+This is not a single global optimization over the whole weekend. The slot-by-slot model is intentional: between runs, the organizer inspects the result, makes any manual fixes, and decides whether to enable the late boost for the next slot.
 
 ---
 
@@ -58,7 +58,7 @@ flowchart TD
     D --> E[4. Adjust scores\nper state + boost + DM]
     E --> F[5. Build flow network\nSource → Players → Events → Sink]
     F --> G[6. Solve min-cost max-flow]
-    G --> H[7. Flag events below MinPlayers\nfor organiser review]
+    G --> H[7. Flag events with <= 2 players\nfor organiser review]
     H --> I[8. Update satisfied set]
     I --> J[9. Emit report]
     J --> End([Slot done])
@@ -139,14 +139,13 @@ Run min-cost max-flow from S to T.
 
 ### Step 7 — Flag undersubscribed events
 
-After solving, scan all events: any event with **fewer than 3 assigned players** is added to `UndersubscribedEvents` in the result. The threshold is hardcoded (`minViablePlayers = 3`) — three players is roughly the minimum for most tabletop games to be worth running.
+After solving, scan all events: any event with **2 or fewer assigned players** is added to `UndersubscribedEvents` in the result. The threshold is hardcoded (`minViablePlayers = 3`) — three players is roughly the minimum for most tabletop games to be worth running, so anything below that is flagged.
 
-**The algorithm does not cancel events.** This is a deliberate choice — automated cancellation has too many edge cases (cascading cascades, "savable vs doomed" judgments, displaced players with no fallback) that the algorithm can't resolve well without human context. Instead, the flagged list goes to the organisers, who can:
+**The algorithm does not change assignments for undersubscribed events.** This is a deliberate choice — automatic changes have too many edge cases (cascading effects, "savable vs doomed" judgments, displaced players with no fallback) that the algorithm can't resolve well without human context. Instead, the flagged list goes to the organisers, who can:
 
 - Talk to the assigned players about swapping
 - Merge a small group with another table
 - Accept a smaller-than-usual group
-- Cancel the event manually and re-solve a downstream slot with adjusted preferences
 
 ### Step 8 — Update satisfaction state
 
@@ -156,7 +155,7 @@ For each player assigned to an event they scored 5 in this slot, add them to the
 
 Output for this slot:
 - **Assignment map**: which players go to which event.
-- **Undersubscribed events**: events below MinPlayers — flagged for organiser review (not cancelled).
+- **Undersubscribed events**: events with 2 or fewer players — flagged for organiser review.
 - **Unassigned players**: had interest but couldn't be placed (e.g., all their rated events were full).
 - **Newly satisfied players**: those who received their first score-5 assignment this slot.
 - **Running totals**: satisfied / total players with any 5-score across the weekend.
@@ -170,36 +169,36 @@ Output for this slot:
 4 players, 2 events (capacity 2 each), late boost off, all players unsatisfied.
 
 ```
-Preferences:       Adjusted scores (5 → 10):
-  P1: A=5, B=3       P1→A: 10   P1→B: 3
-  P2: A=5            P2→A: 10
+Preferences:       Adjusted scores (5 → 14, because each player has 1 remaining score-5 opportunity):
+  P1: A=5, B=3       P1→A: 14   P1→B: 3
+  P2: A=5            P2→A: 14
   P3: B=4            P3→B:  4
-  P4: A=2, B=5       P4→A:  2   P4→B: 10
+  P4: A=2, B=5       P4→A:  2   P4→B: 14
 ```
 
 ```mermaid
 flowchart LR
     S((S)) --> P1 & P2 & P3 & P4
 
-    P1 -->|"-10"| A
+    P1 -->|"-14"| A
     P1 -->|"-3"| B
-    P2 -->|"-10"| A
+    P2 -->|"-14"| A
     P3 -->|"-4"| B
     P4 -->|"-2"| A
-    P4 -->|"-10"| B
+    P4 -->|"-14"| B
 
     A["Event A\ncap 2"] -->|cap 2| T((T))
     B["Event B\ncap 2"] -->|cap 2| T
 ```
 
-Optimal flow (total cost −34, maximum):
+Optimal flow (total cost −46, maximum):
 
 | Event | Assigned players |
 |---|---|
 | A | P1, P2 |
 | B | P3, P4 |
 
-All 4 players satisfied this slot (P1, P2, P4 got a score-5 event; P3 had no score-5 preference).
+All 4 players are assigned this slot. P1, P2, and P4 are newly satisfied because they got a score-5 event; P3 had no score-5 preference and is not part of the satisfaction count.
 
 ---
 
@@ -211,9 +210,11 @@ For a single slot with **P** players and **E** events:
 |---|---|
 | Nodes | O(P + E) |
 | Edges | O(P × E) worst case |
-| Min-cost max-flow | O(P × E × log(P + E)) with SPFA |
+| Flow augmentations | At most O(P), because each player can contribute at most one unit of flow |
+| One SPFA pass | O(V × A), where V is graph nodes and A is graph edges |
+| Total min-cost max-flow | O(F × V × A), where F is the final number of seated players |
 
-A single MCMF solve per slot. For realistic convention sizes (200 players, 7 events per slot) each slot solves in milliseconds.
+Here, `V = O(P + E)`, `A = O(R + P + E)`, `R` is the number of rated player/event preferences in the slot, and `F <= P`. In the dense worst case, `R = P × E`. For realistic convention sizes (around 200 players and 5-7 events per slot), each slot should still solve quickly, but SPFA does not have a logarithmic shortest-path bound.
 
 ---
 

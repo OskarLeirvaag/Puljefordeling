@@ -37,30 +37,35 @@ A TTRPG/boardgame convention runs over a weekend with the following structure:
 2. An EVENT cannot exceed its **capacity**.
 3. If a PLAYER has expressed **no interest** in any EVENT for a SLOT, they are **ignored** for that SLOT.
 4. SLOTs must be **processed in order** (SLOT-1 is finalized before SLOT-2 begins, etc.).
-5. Any EVENT assigned **fewer than 3 PLAYERs** is **flagged for organiser review** in the report — it is NOT automatically cancelled. The organiser decides what to do (talk to players, allow swaps, merge tables, accept a small group, or cancel the event manually).
+5. Any EVENT assigned **2 or fewer PLAYERs** is **flagged for organiser review** in the report. The solver does not change or remove the assignment automatically.
 
 ---
 
 ## Objectives
 
-### Primary (most important)
-> Maximize the number of distinct PLAYERs who receive **at least one assignment to an EVENT they scored 5** across the entire weekend.
+### First objective: participation
+> Maximize the number of interested PLAYERs who get to play in each SLOT.
+
+The solver uses max-flow for this objective. A PLAYER may therefore be assigned to a lower-scored fallback if that is what allows the slot to seat more PLAYERs overall.
+
+### Second objective: greatest wishes
+> Among max-participation assignments, maximize the number of distinct PLAYERs who receive **at least one assignment to an EVENT they scored 5** across the entire weekend.
 
 A PLAYER may score 5 on multiple EVENTs across any SLOT — all are equally desirable. Getting assigned to any one of them fulfils the "at-least-once" rule for that PLAYER.
 
 - Once fulfilled, the PLAYER is **satisfied** and deprioritized when competing against unsatisfied PLAYERs for score-5 seats in later SLOTs.
 - Being satisfied does not exclude a PLAYER from further score-5 assignments if capacity remains.
 
-### Secondary
+### Third objective: total preference
 > Maximize the **total preference score sum** across all assignments.
 
-Among solutions equal on the primary objective, prefer the one where PLAYERs are assigned to events they care most about.
+Among solutions equal on participation and greatest-wish fairness, prefer the one where PLAYERs are assigned to events they care most about.
 
 ---
 
 ## Scoring Mechanic
 
-To steer the assignment algorithm toward the primary objective, raw preference scores are adjusted before solving each SLOT:
+To steer the assignment algorithm toward greatest-wish fairness inside the max-participation assignment, raw preference scores are adjusted before solving each SLOT:
 
 | Condition | Adjusted score |
 |---|---|
@@ -81,9 +86,9 @@ Where `opportunities` is the number of remaining SLOTs (including the current on
 | 4 | 11 |
 | 5 or more | 10 |
 
-**Key property**: a player's score-5 edge (adjusted to ≥ 10) always outweighs any lower-scored edge (max 8 with boost, max 4 without). A player is therefore never moved away from their score-5 event to a lower-scored one *unless their score-5 event is full*.
+**Key property**: within a fixed number of seated PLAYERs, a player's score-5 edge (adjusted to ≥ 10) outweighs any lower-scored non-DM edge (max 8 with boost, max 4 without). If their score-5 EVENT has free capacity in the final assignment, the solver should prefer that EVENT over a lower-scored fallback. If the score-5 EVENT is full, the solver may place the PLAYER in a fallback so another PLAYER can also play.
 
-**Scarcity bonus** ensures that players who have only one or two score-5 opportunities across the weekend are not crowded out by players with many other chances. This is the cross-slot look-ahead that the primary objective requires.
+**Scarcity bonus** ensures that players who have only one or two score-5 opportunities across the weekend are not crowded out by players with many other chances. This is the cross-slot look-ahead used for greatest-wish fairness.
 
 The late boost (all scores × 2 for unsatisfied players) applies to a configurable trailing window of SLOTs, set by the organizers at runtime.
 
@@ -121,18 +126,18 @@ Both of the following outcomes are valid and expected:
 |---|---|
 | More interested PLAYERs than total event capacity in a SLOT | Some PLAYERs are left **unassigned** for that SLOT. The algorithm fills the most valuable seats first. |
 | Fewer interested PLAYERs than an event's capacity | The event runs with a **partial fill**. Empty seats are not a problem. |
-| Fewer than 3 PLAYERs assigned to an event | The event is **flagged for organiser review** in the report. Assigned PLAYERs stay assigned; the organiser decides whether to keep the event running, talk to players about swapping, or cancel it manually. |
+| 2 or fewer PLAYERs assigned to an event | The event is **flagged for organiser review** in the report. Assigned PLAYERs stay assigned. |
 
 ---
 
 ## Challenges
 
 - **Contention**: Many PLAYERs may score 5 on the same EVENT — capacity limits mean not everyone can get their top pick.
-- **Sequential commitment**: Decisions made in SLOT-1 are irreversible and affect what options remain for SLOT-2 onward.
-- **Look-ahead trade-off**: Greedily maximizing SLOT-1 may starve PLAYERs of score-5 opportunities in later SLOTs. The satisfaction-based priority weighting approximates this without exhaustive search.
+- **Sequential commitment**: Decisions made in SLOT-1 are finalized before SLOT-2 runs and affect what options remain for SLOT-2 onward.
+- **Look-ahead trade-off**: The solver does not globally optimize the whole weekend at once. That is intentional: organizers need to review and adjust each slot before continuing. The satisfaction-based priority weighting approximates cross-slot fairness without removing that manual control point.
 - **Uneven interest distribution**: Some PLAYERs may score 5 on many events; others may have a single high-priority pick and nothing else.
 - **Partial coverage**: A PLAYER who has no interests in some SLOTs is not penalized — they only participate in SLOTs where they expressed interest.
-- **Undersubscribed events**: An event with very few interested PLAYERs may not be worth running. The MinPlayers threshold and cancellation loop handle this.
+- **Undersubscribed events**: An event with very few assigned PLAYERs may need organiser attention. The solver flags these for review; it does not change assignments or re-solve automatically.
 
 ---
 
@@ -141,8 +146,8 @@ Both of the following outcomes are valid and expected:
 For each SLOT, the algorithm produces:
 
 - **Assignment map**: `EVENT → [PLAYERs]`, respecting all capacity and exclusivity constraints.
-- **Undersubscribed events**: EVENTs with fewer than 3 assigned PLAYERs, flagged for organiser review (not automatically cancelled).
-- **Unassigned PLAYERs**: PLAYERs who had interest but could not be placed in any surviving event.
+- **Undersubscribed events**: EVENTs with 2 or fewer assigned PLAYERs, flagged for organiser review.
+- **Unassigned PLAYERs**: PLAYERs who had interest but could not be placed in any rated event.
 - **Newly satisfied PLAYERs**: PLAYERs who received their first score-5 assignment this SLOT.
 - **Total score**: sum of actual (unadjusted) preference scores across all assignments.
 - **Tie-breaking seed**: the seed used for the lottery shuffle this SLOT.
