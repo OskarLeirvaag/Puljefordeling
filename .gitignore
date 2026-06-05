@@ -1,0 +1,14 @@
+# OS
+.DS_Store
+
+# Go
+*.exe
+*.test
+*.out
+/Puljefordeling
+
+# Node / Slidev (slides/)
+node_modules/
+dist/
+.slidev/
+*.log
